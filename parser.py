@@ -86,6 +86,8 @@ def rect_tb_even(hrle, rect_x, rect_w, rect_h, rect_dist, threshold_min, thresho
     assert len(y_top) == len(y_bot)     # FIXME: align y_top and y_bot
     if y_top[0] > y_bot[0]:
         y_top, y_bot = y_bot, y_top
+    if y_bot[0] - y_top[0] == rect_dist - rect_h:   # gap
+        y_top, y_bot = y_bot[:-1], y_top[1:]
     return y_top
 
 
@@ -170,6 +172,13 @@ def find_space_x(edges, x_begin, x_end, y_begin, y_end):
     return None
 
 
+def crop2u32(rgb, x, y, w, h):
+    r = rgb[y:y+h, x:x+w, 0].astype(np.uint32)
+    g = rgb[y:y+h, x:x+w, 1].astype(np.uint32)
+    b = rgb[y:y+h, x:x+w, 2].astype(np.uint32)
+    return r | (g << 8) | (b << 16)
+
+
 class Parser:
     TYPE_LEFT_CHAT = 1
     TYPE_RIGHT_CHAT = 2
@@ -187,7 +196,20 @@ class Parser:
     chat_icon_threshold_min = 30
     chat_icon_threshold_max = 40
 
+    f14 = None
+    f12 = None
+
     def __init__(self) -> None:
+        if self.f14 is None:
+            # XXX: hack
+            import sys
+            sys.path.insert(0, '../img2txt')
+            import img2txt
+            self.f14 = img2txt.Font()
+            self.f14.load_bin_file('../img2txt/yahei.14.bin')
+            self.f12 = img2txt.Font()
+            self.f12.load_bin_file('../img2txt/yahei.12.bin')
+
         self.r_left_panel_icon_x = None
         self.r_left_panel_icon_ys = None
         self.r_left_panel_boundary = None
@@ -199,6 +221,7 @@ class Parser:
         self.r_content_left = None
         self.r_content_right = None
         self.r_content_types = None
+        self.r_content_data = []
 
     def run(self, rgb, training: bool):
         # rgb: uint8 array of dimension (h, w, 3)
@@ -346,6 +369,27 @@ class Parser:
         self.r_content_types = types
         print('r_chat_ys_end', ys_end)
 
+        self.r_content_data = []
+        for y, yend, x1, x2, tp in zip(ys, ys_end, content_left, content_right, types):
+            font = self.f12 if tp == self.TYPE_TS else self.f14
+            crop = crop2u32(rgb, x1, y, x2 - x1, yend - y)
+            crop_ptr, _ = crop.__array_interface__['data']
+            char_result = font.run(crop_ptr, x2 - x1, yend - y)
+            line_result = font.make_lines(crop_ptr, x2 - x1, yend - y, char_result)
+
+            contents = []
+            self.r_content_data.append(contents)
+            for tx, ty, tw, th, txt in line_result.tolist():
+                # filter out noise
+                # FIXME: this should be handled in img2txt
+                if (tp == self.TYPE_LEFT_CHAT or tp == self.TYPE_RIGHT_CHAT) and ty % 20 != 5:
+                    continue
+                if tp == self.TYPE_TS and ty != 1:
+                    continue
+                contents.append((x1 + tx, y + ty, tw, th, txt))
+
+            # TODO: other content types, image, rp...
+
 
 def add_rect(rgb, rect_x, rect_ys, rect_w, rect_h, color=np.asarray([0xff, 0x40, 0x40])):
     x_slice = slice(rect_x, rect_x + rect_w)
@@ -389,6 +433,11 @@ def main():
             add_rect(rgb, p.r_chat_icon_left_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
         if tp == p.TYPE_RIGHT_CHAT:
             add_rect(rgb, p.r_chat_icon_right_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
+
+    for idx in np.argsort(p.r_content_ys):
+        for cx, cy, cw, ch, ctxt in p.r_content_data[idx]:
+            print(p.r_content_types[idx], (cx, cy, cw, ch), ctxt)
+
     PIL.Image.fromarray(rgb).save('mark_wx4.png')
 
 
