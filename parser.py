@@ -213,6 +213,7 @@ class Parser:
         self.r_left_panel_icon_x = None
         self.r_left_panel_icon_ys = None
         self.r_left_panel_boundary = None
+        self.r_left_panel_data = None
         self.r_chat_icon_left_x = None
         self.r_chat_icon_right_x = None
         self.r_editor_boundary = None
@@ -221,7 +222,7 @@ class Parser:
         self.r_content_left = None
         self.r_content_right = None
         self.r_content_types = None
-        self.r_content_data = []
+        self.r_content_data = None
 
     def run(self, rgb, training: bool):
         # rgb: uint8 array of dimension (h, w, 3)
@@ -372,7 +373,7 @@ class Parser:
         self.r_content_data = []
         for y, yend, x1, x2, tp in zip(ys, ys_end, content_left, content_right, types):
             font = self.f12 if tp == self.TYPE_TS else self.f14
-            crop = crop2u32(rgb, x1, y, x2 - x1, yend - y)
+            crop = crop2u32(rgb, x1, y, x2 - x1, yend - y).ravel()
             crop_ptr, _ = crop.__array_interface__['data']
             char_result = font.run(crop_ptr, x2 - x1, yend - y)
             line_result = font.make_lines(crop_ptr, x2 - x1, yend - y, char_result)
@@ -389,6 +390,52 @@ class Parser:
                 contents.append((x1 + tx, y + ty, tw, th, txt))
 
             # TODO: other content types, image, rp...
+
+        self.r_left_panel_data = []
+        crop_h = self.left_panel_icon_h + 1
+        for y in self.r_left_panel_icon_ys:
+            x1 = self.r_left_panel_icon_x + self.left_panel_icon_w
+            x2 = self.r_left_panel_boundary
+            crop = crop2u32(rgb, x1, y, x2 - x1, crop_h)
+            crop[crop > 0xb9b9b9] = 0xffffff     # make bg constant
+
+            # import PIL.Image
+            # t = np.empty((crop.shape[0], crop.shape[1], 3), dtype=np.uint8)
+            # t[:, :, 0] = crop.astype(np.uint8)
+            # t[:, :, 1] = (crop >> 8).astype(np.uint8)
+            # t[:, :, 2] = (crop >> 16).astype(np.uint8)
+            # PIL.Image.fromarray(t).save('dbg.png') if y == 200 else None
+
+            crop = crop.ravel()
+            crop_ptr, _ = crop.__array_interface__['data']
+
+            char_result = self.f14.run(crop_ptr, x2 - x1, crop_h)
+            line_result = self.f14.make_lines(crop_ptr, x2 - x1, crop_h, char_result)
+            # print(y, line_result.tolist())
+            title = ''
+            for cx, cy, cw, _, ctxt in line_result.tolist():
+                if cx == 10 and cy == 0:
+                    title = ctxt
+                    break
+            if title[-1] == '‥':
+                title = title[:-1] + '…'
+
+            char_result = self.f12.run(crop_ptr, x2 - x1, crop_h)
+            line_result = self.f12.make_lines(crop_ptr, x2 - x1, crop_h, char_result)
+            # print('xxx', y, line_result.tolist())
+            ts = ''
+            detail = ''
+            for cx, cy, cw, _, ctxt in line_result.tolist():
+                if cx + cw == 186 and cy == 0:
+                    ts = ctxt
+                elif cx == 10 and cy == 24:
+                    # FIXME: unreognized char in the middle
+                    detail = ctxt
+                    break
+            if detail.endswith('‥.'):
+                detail = detail[:-2] + '…'
+
+            self.r_left_panel_data.append((title, ts, detail))
 
 
 def add_rect(rgb, rect_x, rect_ys, rect_w, rect_h, color=np.asarray([0xff, 0x40, 0x40])):
@@ -433,6 +480,9 @@ def main():
             add_rect(rgb, p.r_chat_icon_left_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
         if tp == p.TYPE_RIGHT_CHAT:
             add_rect(rgb, p.r_chat_icon_right_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
+
+    for y, (title, ts, detail) in zip(p.r_left_panel_icon_ys, p.r_left_panel_data):
+        print(y, (title, ts, detail))
 
     for idx in np.argsort(p.r_content_ys):
         for cx, cy, cw, ch, ctxt in p.r_content_data[idx]:
