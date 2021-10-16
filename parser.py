@@ -196,6 +196,8 @@ class Parser:
     chat_icon_threshold_min = 30
     chat_icon_threshold_max = 40
 
+    group_chat_msg_offset_y = 16
+
     f14 = None
     f12 = None
 
@@ -223,6 +225,7 @@ class Parser:
         self.r_content_right = None
         self.r_content_types = None
         self.r_content_data = None
+        self.r_content_is_group = None
 
     def run(self, rgb, training: bool):
         # rgb: uint8 array of dimension (h, w, 3)
@@ -324,22 +327,33 @@ class Parser:
             np.full((1,), self.TYPE_END, dtype=np.uint8),
         ))
         sorted_idx = np.argsort(ys)
-        assert types[sorted_idx[-1]] == 4
+        assert len(sorted_idx) == 0 or types[sorted_idx[-1]] == 4
 
         vhdiff = vdiff & hdiff
+        # import PIL.Image
+        # PIL.Image.fromarray(vhdiff).save('dbg.png')
+
         ys_end = np.zeros_like(ys)
         content_left = np.zeros_like(ys)
         content_right = np.zeros_like(ys)
+        self.r_content_is_group = None
         for idx1, idx2 in zip(sorted_idx[:-1], sorted_idx[1:]):
             y1, y2 = ys[idx1], ys[idx2]
             tp = types[idx1]
             if tp == self.TYPE_TS:
                 y2 = y1 + ts_h
             elif tp == self.TYPE_LEFT_CHAT or tp == self.TYPE_RIGHT_CHAT:
+                x1 = self.r_chat_icon_left_x + self.left_panel_icon_w + 5
+                x2 = self.r_chat_icon_right_x - 5
                 # FIXME: group chat layout
+                if self.r_content_is_group is None:
+                    self.r_content_is_group = (
+                        vhdiff[y1 + 12, x1:x2] == 1
+                    ).all()
+                    print('r_content_is_group', self.r_content_is_group)
                 y2 = find_space_y(
                     vhdiff, y1 + self.chat_icon_h, y2,
-                    self.r_chat_icon_left_x, self.r_chat_icon_right_x,
+                    x1, x2,
                 )
                 if y2 is None:
                     break   # the last one is not complete
@@ -356,12 +370,20 @@ class Parser:
                 y1, y2,
             )
 
-        if len(ys_end) and ys_end[-1] == 0:
-            ys = ys[:-1]
-            ys_end = ys_end[:-1]
-            content_left = content_left[:-1]
-            content_right = content_right[:-1]
-            types = types[:-1]
+        if len(sorted_idx) > 1 and ys_end[sorted_idx[-2]] == 0:
+            last_idx = sorted_idx[-2]       # the incomplete one
+            ys = np.delete(ys, last_idx)
+            ys_end = np.delete(ys_end, last_idx)
+            content_left = np.delete(content_left, last_idx)
+            content_right = np.delete(content_right, last_idx)
+            types = np.delete(types, last_idx)
+
+        assert types[-1] == self.TYPE_END
+        ys = ys[:-1]
+        ys_end = ys_end[:-1]
+        content_left = content_left[:-1]
+        content_right = content_right[:-1]
+        types = types[:-1]
 
         self.r_content_ys = ys
         self.r_content_ys_end = ys_end
@@ -372,21 +394,26 @@ class Parser:
 
         self.r_content_data = []
         for y, yend, x1, x2, tp in zip(ys, ys_end, content_left, content_right, types):
-            font = self.f12 if tp == self.TYPE_TS else self.f14
+            # TODO: group chat name
+            pass
+
+            if tp == self.TYPE_LEFT_CHAT or tp == self.TYPE_RIGHT_CHAT:
+                if self.r_content_is_group:
+                    y += self.group_chat_msg_offset_y
+                yend -= 2   # boundary
+
             crop = crop2u32(rgb, x1, y, x2 - x1, yend - y).ravel()
             crop_ptr, _ = crop.__array_interface__['data']
+            font = self.f12 if tp == self.TYPE_TS else self.f14
             char_result = font.run(crop_ptr, x2 - x1, yend - y)
             line_result = font.make_lines(crop_ptr, x2 - x1, yend - y, char_result)
 
             contents = []
             self.r_content_data.append(contents)
             for tx, ty, tw, th, txt in line_result.tolist():
-                # filter out noise
-                # FIXME: this should be handled in img2txt
-                if (tp == self.TYPE_LEFT_CHAT or tp == self.TYPE_RIGHT_CHAT) and ty % 20 != 5:
-                    continue
-                if tp == self.TYPE_TS and ty != 1:
-                    continue
+                # # XXX: filter out noise
+                # if tp == self.TYPE_TS and ty != 1:
+                #     continue
                 contents.append((x1 + tx, y + ty, tw, th, txt))
 
             # TODO: other content types, image, rp...
@@ -429,7 +456,7 @@ class Parser:
                 if cx + cw == 186 and cy == 0:
                     ts = ctxt
                 elif cx == 10 and cy == 24:
-                    # FIXME: unreognized char in the middle
+                    # FIXME: unrecognized char in the middle
                     detail = ctxt
                     break
             if detail.endswith('‥.'):
@@ -463,7 +490,11 @@ def main():
     p = Parser()
     p.run(rgb, training=True)
 
-    im = PIL.Image.open('wx4.png')
+    import sys
+    input_img = sys.argv[1]
+    assert '/' not in input_img
+
+    im = PIL.Image.open(input_img)
     rgb = np.asarray(im)
     p.run(rgb, training=False)
 
@@ -475,11 +506,13 @@ def main():
         p.TYPE_TS: [0, 0xff, 0],
     }
     for y, yend, x1, x2, tp in zip(p.r_content_ys, p.r_content_ys_end, p.r_content_left, p.r_content_right, p.r_content_types):
-        add_rect(rgb, x1, np.asarray([y]), x2 - x1, yend - y, color=t2c[tp])
         if tp == p.TYPE_LEFT_CHAT:
             add_rect(rgb, p.r_chat_icon_left_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
         if tp == p.TYPE_RIGHT_CHAT:
             add_rect(rgb, p.r_chat_icon_right_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
+        if p.r_content_is_group and (tp == p.TYPE_LEFT_CHAT or tp == p.TYPE_RIGHT_CHAT):
+            y += p.group_chat_msg_offset_y
+        add_rect(rgb, x1, np.asarray([y]), x2 - x1, yend - y, color=t2c[tp])
 
     for y, (title, ts, detail) in zip(p.r_left_panel_icon_ys, p.r_left_panel_data):
         print(y, (title, ts, detail))
@@ -488,7 +521,7 @@ def main():
         for cx, cy, cw, ch, ctxt in p.r_content_data[idx]:
             print(p.r_content_types[idx], (cx, cy, cw, ch), ctxt)
 
-    PIL.Image.fromarray(rgb).save('mark_wx4.png')
+    PIL.Image.fromarray(rgb).save('mark_' + input_img)
 
 
 if __name__ == '__main__':
