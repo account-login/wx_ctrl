@@ -465,13 +465,12 @@ class Parser:
             self.r_left_panel_data.append((title, ts, detail))
 
 
-def add_rect(rgb, rect_x, rect_ys, rect_w, rect_h, color=np.asarray([0xff, 0x40, 0x40])):
+def add_rect(rgb, rect_x, rect_y, rect_w, rect_h, color=np.asarray([0xff, 0x40, 0x40])):
     x_slice = slice(rect_x, rect_x + rect_w)
-    rgb[rect_ys - 1, x_slice] = color
-    rgb[rect_ys + rect_h, x_slice] = color
+    rgb[rect_y - 1, x_slice] = color
+    rgb[rect_y + rect_h, x_slice] = color
     x_pair = (rect_x - 1, rect_x + rect_w)
-    for y in rect_ys:
-        rgb[y:y+rect_h, x_pair] = color
+    rgb[rect_y : rect_y + rect_h, x_pair] = color
 
 
 def main():
@@ -499,7 +498,8 @@ def main():
     p.run(rgb, training=False)
 
     # demo
-    add_rect(rgb, p.r_left_panel_icon_x, p.r_left_panel_icon_ys, p.left_panel_icon_w, p.left_panel_icon_h)
+    for y in p.r_left_panel_icon_ys:
+        add_rect(rgb, p.r_left_panel_icon_x, y, p.left_panel_icon_w, p.left_panel_icon_h)
     t2c = {
         p.TYPE_LEFT_CHAT: [0, 0, 0xff],
         p.TYPE_RIGHT_CHAT: [0xff, 0, 0xff],
@@ -507,12 +507,12 @@ def main():
     }
     for y, yend, x1, x2, tp in zip(p.r_content_ys, p.r_content_ys_end, p.r_content_left, p.r_content_right, p.r_content_types):
         if tp == p.TYPE_LEFT_CHAT:
-            add_rect(rgb, p.r_chat_icon_left_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
+            add_rect(rgb, p.r_chat_icon_left_x, y, p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
         if tp == p.TYPE_RIGHT_CHAT:
-            add_rect(rgb, p.r_chat_icon_right_x, np.asarray([y]), p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
+            add_rect(rgb, p.r_chat_icon_right_x, y, p.chat_icon_w, p.chat_icon_h, color=t2c[tp])
         if p.r_content_is_group and (tp == p.TYPE_LEFT_CHAT or tp == p.TYPE_RIGHT_CHAT):
             y += p.group_chat_msg_offset_y
-        add_rect(rgb, x1, np.asarray([y]), x2 - x1, yend - y, color=t2c[tp])
+        add_rect(rgb, x1, y, x2 - x1, yend - y, color=t2c[tp])
 
     for y, (title, ts, detail) in zip(p.r_left_panel_icon_ys, p.r_left_panel_data):
         print(y, (title, ts, detail))
@@ -520,6 +520,9 @@ def main():
     for idx in np.argsort(p.r_content_ys):
         for cx, cy, cw, ch, ctxt in p.r_content_data[idx]:
             print(p.r_content_types[idx], (cx, cy, cw, ch), ctxt)
+            # if len(ctxt) == 1:
+            #     print('yyy', p.r_content_types[idx], (cx, cy, cw, ch), ord(ctxt))
+            #     add_rect(rgb, cx, cy, cw, ch)
 
     PIL.Image.fromarray(rgb).save('mark_' + input_img)
 
